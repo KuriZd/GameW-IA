@@ -3,6 +3,8 @@ import random
 import csv
 import joblib  # Para cargar modelos
 import os
+import pandas as pd
+
 
 # Inicializar Pygame
 pygame.init()
@@ -262,9 +264,9 @@ def mostrar_menu_modelos():
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
                 guardar_csv()
-                entrenar_modelo_arbol()
-                entrenar_modelo_knn()
-                entrenar_modelo_red_neuronal()
+                # entrenar_modelo_arbol()
+                # entrenar_modelo_knn()
+                # entrenar_modelo_red_neuronal()
                 pygame.quit()
                 exit()
             if evento.type == pygame.KEYDOWN:
@@ -293,9 +295,9 @@ def mostrar_menu():
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
                 guardar_csv()
-                entrenar_modelo_arbol()
-                entrenar_modelo_knn()
-                entrenar_modelo_red_neuronal()
+                # entrenar_modelo_arbol()
+                # entrenar_modelo_knn()
+                # entrenar_modelo_red_neuronal()
                 pygame.quit()
                 exit()
             if evento.type == pygame.KEYDOWN:
@@ -324,7 +326,7 @@ def reiniciar_juego():
     bala_disparada = False
     salto = False
     en_suelo = True
-    print("Datos recopilados para el modelo:", datos_modelo)
+    # print("Datos recopilados para el modelo:", datos_modelo)
     mostrar_menu()
 
 def update():
@@ -372,9 +374,9 @@ def main():
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
                 guardar_csv()
-                entrenar_modelo_arbol()
-                entrenar_modelo_knn()
-                entrenar_modelo_red_neuronal()
+                # entrenar_modelo_arbol()
+                # entrenar_modelo_knn()
+                # entrenar_modelo_red_neuronal()
                 correr = False
             if evento.type == pygame.KEYDOWN:
                 if evento.key == pygame.K_SPACE and en_suelo and not pausa:
@@ -399,8 +401,11 @@ def main():
             else:
                 if modelo_clasificador:
                     distancia = abs(jugador.x - bala.x)
+                    print(f"Modelo cargado: {type(modelo_clasificador)}")
                     entrada = pd.DataFrame([[velocidad_bala, distancia]], columns=["velocidad_bala", "distancia"])
+                    print(f"[AUTO] velocidad_bala: {velocidad_bala}, distancia: {distancia}")
                     prediccion = modelo_clasificador.predict(entrada)[0]
+                    print(f"[AUTO] Predicción del modelo: {prediccion}, en_suelo: {en_suelo}")
                     if prediccion == 1 and en_suelo:
                         salto = True
                         en_suelo = False
