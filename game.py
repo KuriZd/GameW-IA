@@ -2,272 +2,680 @@ import pygame
 import random
 import csv
 import joblib
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
 
-pygame.init()
-
-w, h = 800, 400
-pantalla = pygame.display.set_mode((w, h))
-pygame.display.set_caption("Juego: Disparo de Bala, Salto, Nave y Menú")
+# -----------------------------
+# Constantes del juego
+# -----------------------------
+WIDTH, HEIGHT = 800, 400
+FPS = 30
 
 BLANCO = (255, 255, 255)
 NEGRO = (0, 0, 0)
 
-jugador = None
-bala = None
-bala2 = None
-fondo = None
-nave = None
-menu = None
+POS_INICIAL_X = 50
+PLAYER_WIDTH, PLAYER_HEIGHT = 32, 48
 
-salto = False
-salto_altura = 15
-gravedad = 1
-en_suelo = True
-velocidad_jugador = 3
-posicion_inicial = 50
-volver_a_inicio = False
+BULLET_SIZE = 16
+NAVE_SIZE = 64
 
-pausa = False
-fuente = pygame.font.SysFont('Arial', 24)
-menu_activo = True
-modo_auto = False
-modelo_seleccionado = None
+VEL_JUGADOR = 3
+GRAVEDAD = 1
+ALTURA_SALTO_INICIAL = 15
 
-# Datos para entrenamiento
-datos_modelo = []
+# Umbral para mover a la derecha basado en la posición Y de la bala 2
+UMBRAL_BALA2_Y = 200
 
-# Cargar imágenes optimizadas
-jugador_frames = [
-    pygame.image.load('assets/sprites/mono_frame_1.png').convert_alpha(),
-    pygame.image.load('assets/sprites/mono_frame_2.png').convert_alpha(),
-    pygame.image.load('assets/sprites/mono_frame_3.png').convert_alpha(),
-    pygame.image.load('assets/sprites/mono_frame_4.png').convert_alpha()
-]
+# -----------------------------
+# Clase para recopilar datos de entrenamiento
+# -----------------------------
+class DataCollector:
+    def __init__(self):
+        # Lista de tuplas: (vel_bala, dist_bala1, bala2_y, dist_bala2, mov_derecha, accion)
+        self.data = []
 
-bala_img = pygame.image.load('assets/sprites/purple_ball.png').convert_alpha()
-fondo_img = pygame.image.load('assets/game/fondo2.png').convert()
-nave_img = pygame.image.load('assets/game/ufo.png').convert_alpha()
-menu_img = pygame.image.load('assets/game/menu.png').convert_alpha()
-fondo_img = pygame.transform.scale(fondo_img, (w, h))
+    def add_data(self, vel_bala, dist_bala1, bala2_y, dist_bala2, mov_derecha, accion):
+        """
+        Agrega una muestra al conjunto de datos.
+        """
+        self.data.append((vel_bala, dist_bala1, bala2_y, dist_bala2, mov_derecha, accion))
 
-jugador = pygame.Rect(posicion_inicial, h - 100, 32, 48)
-bala = pygame.Rect(w - 50, h - 90, 16, 16)
-bala2 = pygame.Rect(50, 0, 16, 16)
-nave = pygame.Rect(w - 100, h - 100, 64, 64)
-menu_rect = pygame.Rect(w // 2 - 135, h // 2 - 90, 270, 180)
+    def has_data(self):
+        return len(self.data) > 0
 
-current_frame = 0
-frame_speed = 10
-frame_count = 0
+    def save_csv(self, filename="datos_modelo.csv"):
+        """
+        Guarda todos los datos en un archivo CSV.
+        """
+        with open(filename, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "velocidad_bala",
+                "distancia_bala1",
+                "bala2_y",
+                "distancia_bala2",
+                "mov_derecha",
+                "accion"
+            ])
+            writer.writerows(self.data)
+        print(f"✅ Datos guardados en {filename}.")
 
-velocidad_bala = -10
-bala_disparada = False
-velocidad_bala2 = 9
-bala2_disparada = True
+    def train_decision_tree(self, filename="ArbolDecision.joblib", max_depth=5):
+        """
+        Entrena un árbol de decisión con los datos recopilados (sin usar mov_derecha)
+        y lo guarda.
+        """
+        if not self.has_data():
+            print("⚠️ No hay datos para entrenar el modelo de árbol de decisión.")
+            return False
 
-fondo_x1 = 0
-fondo_x2 = w
+        # Construir X solo con las 4 primeras características (sin mov_derecha)
+        X = [
+            [vel_bala, dist_bala1, bala2_y, dist_bala2]
+            for (vel_bala, dist_bala1, bala2_y, dist_bala2, mov_derecha, accion) in self.data
+        ]
+        y = [accion for (_, _, _, _, _, accion) in self.data]
 
-def disparar_bala():
-    global bala_disparada, velocidad_bala
-    if not bala_disparada:
-        velocidad_bala = random.randint(-8, -3)
-        bala_disparada = True
+        model = DecisionTreeClassifier(max_depth=max_depth, random_state=42)
+        model.fit(X, y)
+        joblib.dump(model, filename)
+        print(f"✅ Modelo de Árbol de Decisión entrenado y guardado en {filename}.")
+        return True
 
-def reset_bala():
-    global bala, bala_disparada
-    bala.x = w - 50
-    bala_disparada = False
+    def train_neural_network(self, filename="RedNeuronal.joblib", hidden_layer_sizes=(35,)):
+        """
+        Entrena una Red Neuronal (MLPClassifier) con los datos recopilados
+        (sin usar mov_derecha) y la guarda.
+        """
+        if not self.has_data():
+            print("⚠️ No hay datos para entrenar la Red Neuronal.")
+            return False
 
-def manejar_salto():
-    global jugador, salto, salto_altura, gravedad, en_suelo
-    if salto:
-        jugador.y -= salto_altura
-        salto_altura -= gravedad
-        if jugador.y >= h - 100:
-            jugador.y = h - 100
-            salto = False
-            salto_altura = 15
-            en_suelo = True
+        # Construir X solo con las 4 primeras características (sin mov_derecha)
+        X = [
+            [vel_bala, dist_bala1, bala2_y, dist_bala2]
+            for (vel_bala, dist_bala1, bala2_y, dist_bala2, mov_derecha, accion) in self.data
+        ]
+        y = [accion for (_, _, _, _, _, accion) in self.data]
 
-def detectar_colisiones():
-    return jugador.colliderect(bala) or jugador.colliderect(bala2)
+        # Convertir a float
+        X = [[float(v) for v in row] for row in X]
 
-def update():
-    global bala, velocidad_bala, current_frame, frame_count, fondo_x1, fondo_x2, bala2
+        model = MLPClassifier(
+            hidden_layer_sizes=hidden_layer_sizes,
+            activation='relu',
+            solver='adam',
+            max_iter=500,
+            random_state=42
+        )
+        model.fit(X, y)
+        joblib.dump(model, filename)
+        print(f"✅ Red Neuronal entrenada y guardada en {filename}.")
+        return True
 
-    fondo_x1 -= 1
-    fondo_x2 -= 1
-    if fondo_x1 <= -w: fondo_x1 = w
-    if fondo_x2 <= -w: fondo_x2 = w
+    def train_knn(self, filename="KNN.joblib", n_neighbors=3):
+        """
+        Entrena un K-Nearest Neighbors con los datos recopilados
+        (sin usar mov_derecha) y lo guarda.
+        """
+        if not self.has_data():
+            print("⚠️ No hay datos para entrenar KNN.")
+            return False
 
-    pantalla.blit(fondo_img, (fondo_x1, 0))
-    pantalla.blit(fondo_img, (fondo_x2, 0))
+        # Construir X solo con las 4 primeras características (sin mov_derecha)
+        X = [
+            [vel_bala, dist_bala1, bala2_y, dist_bala2]
+            for (vel_bala, dist_bala1, bala2_y, dist_bala2, mov_derecha, accion) in self.data
+        ]
+        y = [accion for (_, _, _, _, _, accion) in self.data]
 
-    frame_count += 1
-    if frame_count >= frame_speed:
-        current_frame = (current_frame + 1) % len(jugador_frames)
-        frame_count = 0
-    pantalla.blit(jugador_frames[current_frame], (jugador.x, jugador.y))
+        # Convertir a float
+        X = [[float(v) for v in row] for row in X]
 
-    pantalla.blit(nave_img, (nave.x, nave.y))
+        model = KNeighborsClassifier(n_neighbors=n_neighbors)
+        model.fit(X, y)
+        joblib.dump(model, filename)
+        print(f"✅ KNN entrenado y guardado en {filename}.")
+        return True
 
-    if bala_disparada:
-        bala.x += velocidad_bala
-    if bala.x < 0:
-        reset_bala()
-    pantalla.blit(bala_img, (bala.x, bala.y))
+    def train_linear_regression(self, filename="RegresionLineal.joblib"):
+        """
+        Entrena un modelo de Regresión (Logistic Regression) con los datos recopilados
+        (sin usar mov_derecha) para clasificar acciones y lo guarda.
+        """
+        if not self.has_data():
+            print("⚠️ No hay datos para entrenar Regresión Lineal.")
+            return False
 
-    if bala2_disparada:
-        bala2.y += velocidad_bala2
-    if bala2.y > h:
-        bala2.y = 0
-        bala2.x = 50
-    pantalla.blit(bala_img, (bala2.x, bala2.y))
+        X = [
+            [vel_bala, dist_bala1, bala2_y, dist_bala2]
+            for (vel_bala, dist_bala1, bala2_y, dist_bala2, mov_derecha, accion) in self.data
+        ]
+        y = [accion for (_, _, _, _, _, accion) in self.data]
 
-    if detectar_colisiones():
-        print("\u00a1Colisi\u00f3n detectada!")
-        if not modo_auto:
-            reiniciar_juego()
+        # Convertir a float
+        X = [[float(v) for v in row] for row in X]
 
-def guardar_datos():
-    global jugador, bala, velocidad_bala, salto
-    distancia = abs(jugador.x - bala.x)
-    salto_hecho = 1 if salto else 0
-    datos_modelo.append((velocidad_bala, distancia, salto_hecho))
+        # LogisticRegression usado como clasificador lineal
+        model = LogisticRegression(
+            multi_class='auto',
+            solver='lbfgs',
+            max_iter=1000,
+            random_state=42
+        )
+        model.fit(X, y)
+        joblib.dump(model, filename)
+        print(f"✅ Regresión Lineal (LogisticRegression) entrenada y guardada en {filename}.")
+        return True
+# -----------------------------
+# Clase que representa al jugador
+# -----------------------------
+class Player:
+    def __init__(self, x, y, sprite_frames):
+        self.rect = pygame.Rect(x, y, PLAYER_WIDTH, PLAYER_HEIGHT)
+        self.frames = sprite_frames
+        self.current_frame = 0
+        self.frame_speed = 10
+        self.frame_count = 0
 
-def guardar_csv():
-    with open("datos_modelo.csv", "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["velocidad_bala", "distancia", "salto_hecho"])
-        writer.writerows(datos_modelo)
+        self.is_jumping = False
+        self.jump_height = ALTURA_SALTO_INICIAL
+        self.on_ground = True
 
-def pausa_juego():
-    global pausa
-    pausa = not pausa
-    if pausa:
-        print("Juego pausado. Datos registrados hasta ahora:", datos_modelo)
-    else:
-        print("Juego reanudado.")
+    def start_jump(self):
+        if self.on_ground:
+            self.is_jumping = True
+            self.on_ground = False
 
-def mostrar_menu_modelos():
-    global modelo_seleccionado
-    pantalla.fill(NEGRO)
-    opciones = ["1. Regresión Lineal", "2. Árboles de Decisión", "3. Redes Neuronales", "4. K-Nearest Neighbor"]
-    y = h // 2 - 80
-    pantalla.blit(fuente.render("Selecciona el modelo automático:", True, BLANCO), (w // 4, y - 40))
-    for opcion in opciones:
-        pantalla.blit(fuente.render(opcion, True, BLANCO), (w // 4, y))
-        y += 30
-    pygame.display.flip()
+    def update(self):
+        # Animación del sprite
+        self.frame_count += 1
+        if self.frame_count >= self.frame_speed:
+            self.current_frame = (self.current_frame + 1) % len(self.frames)
+            self.frame_count = 0
 
-    esperando_seleccion = True
-    while esperando_seleccion:
-        for evento in pygame.event.get():
-            if evento.type == pygame.KEYDOWN:
-                if evento.key == pygame.K_1:
-                    modelo_seleccionado = "Regresión Lineal"
-                    esperando_seleccion = False
-                elif evento.key == pygame.K_2:
-                    modelo_seleccionado = "Árboles de Decisión"
-                    esperando_seleccion = False
-                elif evento.key == pygame.K_3:
-                    modelo_seleccionado = "Redes Neuronales"
-                    esperando_seleccion = False
-                elif evento.key == pygame.K_4:
-                    modelo_seleccionado = "K-Nearest Neighbor"
-                    esperando_seleccion = False
+        # Lógica de salto
+        if self.is_jumping:
+            self.rect.y -= self.jump_height
+            self.jump_height -= GRAVEDAD
+            if self.rect.y >= HEIGHT - 100:
+                self.rect.y = HEIGHT - 100
+                self.is_jumping = False
+                self.jump_height = ALTURA_SALTO_INICIAL
+                self.on_ground = True
 
-    print("Modelo seleccionado:", modelo_seleccionado)
+    def draw(self, surface):
+        surface.blit(self.frames[self.current_frame], (self.rect.x, self.rect.y))
 
-def mostrar_menu():
-    global menu_activo, modo_auto
-    pantalla.fill(NEGRO)
-    texto = fuente.render("Presiona 'A' para Auto, 'M' para Manual, o 'Q' para Salir", True, BLANCO)
-    pantalla.blit(texto, (w // 4, h // 2))
-    pygame.display.flip()
 
-    while menu_activo:
-        for evento in pygame.event.get():
-            if evento.type == pygame.QUIT:
-                guardar_csv()
-                pygame.quit()
-                exit()
-            if evento.type == pygame.KEYDOWN:
-                if evento.key == pygame.K_a:
-                    modo_auto = True
-                    mostrar_menu_modelos()
-                    menu_activo = False
-                elif evento.key == pygame.K_m:
-                    modo_auto = False
-                    menu_activo = False
-                elif evento.key == pygame.K_q:
-                    guardar_csv()
-                    pygame.quit()
-                    exit()
+# -----------------------------
+# Clase que representa una bala (o proyectil)
+# -----------------------------
+class Bullet:
+    def __init__(self, x, y, dx, dy, image):
+        self.rect = pygame.Rect(x, y, BULLET_SIZE, BULLET_SIZE)
+        self.vx = dx
+        self.vy = dy
+        self.image = image
+        self.initial_pos = (x, y)
 
-def reiniciar_juego():
-    global menu_activo, jugador, bala, nave, bala_disparada, salto, en_suelo, bala2, volver_a_inicio
-    menu_activo = True
-    jugador.x, jugador.y = posicion_inicial, h - 100
-    bala.x = w - 50
-    bala2.x, bala2.y = 50, 0
-    nave.x, nave.y = w - 100, h - 100
-    bala_disparada = False
-    salto = False
-    en_suelo = True
-    volver_a_inicio = False
-    print("Datos recopilados para el modelo: ", datos_modelo)
-    mostrar_menu()
+    def reset(self, new_x=None, new_y=None):
+        """
+        Restaura la posición de la bala a su origen o a valores opcionales.
+        """
+        if new_x is not None and new_y is not None:
+            self.rect.x, self.rect.y = new_x, new_y
+        else:
+            self.rect.x, self.rect.y = self.initial_pos
+        # Si la bala original va en X (vx != 0), volvemos a asignarle velocidad aleatoria
+        if self.vx != 0:
+            self.vx = random.randint(-8, -3)
 
-def main():
-    global salto, en_suelo, bala_disparada, volver_a_inicio
+    def update(self):
+        self.rect.x += self.vx
+        self.rect.y += self.vy
 
-    reloj = pygame.time.Clock()
-    mostrar_menu()
-    correr = True
+    def draw(self, surface):
+        surface.blit(self.image, (self.rect.x, self.rect.y))
 
-    while correr:
-        for evento in pygame.event.get():
-            if evento.type == pygame.QUIT:
-                guardar_csv()
-                correr = False
-            if evento.type == pygame.KEYDOWN:
-                if evento.key == pygame.K_UP and en_suelo and not pausa:
-                    salto = True
-                    en_suelo = False
-                if evento.key == pygame.K_p:
-                    pausa_juego()
-                if evento.key == pygame.K_q:
-                    guardar_csv()
-                    pygame.quit()
-                    exit()
+    def is_off_screen(self):
+        return (
+            self.rect.x < 0 or self.rect.x > WIDTH or
+            self.rect.y < 0 or self.rect.y > HEIGHT
+        )
 
-        teclas = pygame.key.get_pressed()
-        if teclas[pygame.K_RIGHT] and jugador.x < w - jugador.width and not volver_a_inicio:
-            jugador.x += velocidad_jugador + 2
-            if jugador.x - posicion_inicial > 30:
-                volver_a_inicio = True
 
-        if volver_a_inicio:
-            jugador.x -= velocidad_jugador
-            if jugador.x <= posicion_inicial:
-                jugador.x = posicion_inicial
-                volver_a_inicio = False
+# -----------------------------
+# Clase principal que controla el juego
+# -----------------------------
+class Game:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("Juego: Disparo de Bala, Salto, Nave y Menú")
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont('Arial', 24)
 
-        if not pausa:
-            if not modo_auto:
-                if salto:
-                    manejar_salto()
-                guardar_datos()
-            if not bala_disparada:
-                disparar_bala()
-            update()
+        # Carga de assets
+        self.jugador_frames = [
+            pygame.image.load('assets/sprites/mono_frame_1.png').convert_alpha(),
+            pygame.image.load('assets/sprites/mono_frame_2.png').convert_alpha(),
+            pygame.image.load('assets/sprites/mono_frame_3.png').convert_alpha(),
+            pygame.image.load('assets/sprites/mono_frame_4.png').convert_alpha()
+        ]
+        self.bala_img = pygame.image.load('assets/sprites/purple_ball.png').convert_alpha()
+        self.fondo_img = pygame.transform.scale(
+            pygame.image.load('assets/game/fondo2.png').convert(), (WIDTH, HEIGHT)
+        )
+        self.nave_img = pygame.image.load('assets/game/ufo.png').convert_alpha()
 
+        # Instancias de objetos
+        self.player = Player(POS_INICIAL_X, HEIGHT - 100, self.jugador_frames)
+
+        # Bala 1: se dispara desde la derecha hacia la izquierda
+        self.bullet1 = Bullet(
+            WIDTH - 50, HEIGHT - 90,
+            dx=random.randint(-8, -3), dy=0, image=self.bala_img
+        )
+        # Bala 2: se mueve desde arriba hacia abajo
+        self.bullet2 = Bullet(50, 0, dx=0, dy=3, image=self.bala_img)
+
+        # "Nave" no dispara, solo se dibuja
+        self.nave_rect = pygame.Rect(WIDTH - 100, HEIGHT - 100, NAVE_SIZE, NAVE_SIZE)
+
+        # Fondo "parallax"
+        self.fondo_x1 = 0
+        self.fondo_x2 = WIDTH
+
+        # Estado del juego
+        self.running = True
+        self.paused = False
+        self.menu_active = True
+        self.auto_mode = False
+        self.selected_model_name = None
+        self.model = None
+
+        # Recolector de datos para entrenamiento
+        self.data_collector = DataCollector()
+
+    # ------------------------------------
+    # Detección de colisión “mejorada”
+    # ------------------------------------
+    def detect_collision(self):
+        """
+        Retorna:
+         - 1 si colisiona con bullet1,
+         - 2 si colisiona con bullet2,
+         - None si no hay colisión.
+        """
+        if self.player.rect.colliderect(self.bullet1.rect):
+            return 1
+        if self.player.rect.colliderect(self.bullet2.rect):
+            return 2
+        return None
+
+    # ------------------------------------
+    # Lógica para mostrar mensajes de error
+    # ------------------------------------
+    def show_error_message(self, mensaje, duration_seconds=2):
+        """
+        Muestra un mensaje en pantalla por `duration_seconds` segundos o hasta que el usuario presione una tecla.
+        """
+        self.screen.fill(NEGRO)
+        texto = self.font.render(mensaje, True, (255, 50, 50))
+        rect_texto = texto.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+        self.screen.blit(texto, rect_texto)
         pygame.display.flip()
-        reloj.tick(30)
+        start_ticks = pygame.time.get_ticks()
+        waiting = True
+        while waiting:
+            for event in pygame.event.get():
+                if event.type == pygame.KEYDOWN:
+                    waiting = False
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    exit()
+            seconds_passed = (pygame.time.get_ticks() - start_ticks) / 1000
+            if seconds_passed >= duration_seconds:
+                waiting = False
+            self.clock.tick(FPS)
 
-    pygame.quit()
+    # ------------------------------------
+    # Menú de selección de modelo automático
+    # ------------------------------------
+    def show_model_menu(self):
+        opciones = [
+            ("1. Regresión Lineal", "RegresionLineal"),
+            ("2. Árboles de Decisión", "ArbolDecision"),
+            ("3. Redes Neuronales", "RedNeuronal"),
+            ("4. K-Nearest Neighbor", "KNN")
+        ]
+        selecting = True
+        while selecting:
+            self.screen.fill(NEGRO)
+            y = HEIGHT // 2 - 80
+            title_surf = self.font.render("Selecciona el modelo automático:", True, BLANCO)
+            self.screen.blit(title_surf, (WIDTH // 4, y - 40))
+            for text, _ in opciones:
+                surf = self.font.render(text, True, BLANCO)
+                self.screen.blit(surf, (WIDTH // 4, y))
+                y += 30
+            pygame.display.flip()
 
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.data_collector.save_csv()
+                    pygame.quit()
+                    exit()
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_1:
+                        self.selected_model_name = opciones[0][1]
+                        selecting = False
+                    elif event.key == pygame.K_2:
+                        self.selected_model_name = opciones[1][1]
+                        selecting = False
+                    elif event.key == pygame.K_3:
+                        self.selected_model_name = opciones[2][1]
+                        selecting = False
+                    elif event.key == pygame.K_4:
+                        self.selected_model_name = opciones[3][1]
+                        selecting = False
+
+        try:
+            self.model = joblib.load(f"{self.selected_model_name}.joblib")
+            print(f"✅ Modelo cargado: {self.selected_model_name}.joblib")
+        except Exception as e:
+            print(f"❌ Error al cargar modelo {self.selected_model_name}.joblib: {e}")
+            self.show_error_message(
+                f"No se pudo cargar {self.selected_model_name}.joblib. Asegúrate de entrenarlo primero.",
+                duration_seconds=3
+            )
+            self.auto_mode = False
+            self.model = None
+
+    # ------------------------------------
+    # Menú inicial: modo Manual, Automático o Salir
+    # ------------------------------------
+    def show_main_menu(self):
+        self.menu_active = True
+        while self.menu_active:
+            self.screen.fill(NEGRO)
+            texto = self.font.render(
+                "Presiona 'A' para Auto, 'M' para Manual, 'R' para Menú, o 'Q' para Salir",
+                True, BLANCO
+            )
+            rect_text = texto.get_rect(center=(WIDTH // 2, HEIGHT // 2))
+            self.screen.blit(texto, rect_text)
+            pygame.display.flip()
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.data_collector.save_csv()
+                    pygame.quit()
+                    exit()
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_a:
+                        self.auto_mode = True
+                        self.show_model_menu()
+                        self.menu_active = False
+                    elif event.key == pygame.K_m:
+                        self.auto_mode = False
+                        self.menu_active = False
+                    elif event.key == pygame.K_q:
+                        self.data_collector.save_csv()
+                        pygame.quit()
+                        exit()
+                    elif event.key == pygame.K_r:
+                        # Si presionan R en el menú, simplemente permanece en el menú
+                        self.menu_active = True
+
+    # ------------------------------------
+    # Reiniciar el juego tras colisión
+    # ------------------------------------
+    def restart_game(self):
+        self.menu_active = True
+        # Reposicionar jugador
+        self.player.rect.x, self.player.rect.y = POS_INICIAL_X, HEIGHT - 100
+        self.player.is_jumping = False
+        self.player.on_ground = True
+        self.player.jump_height = ALTURA_SALTO_INICIAL
+
+        # Reposicionar balas
+        self.bullet1.reset(new_x=WIDTH - 50, new_y=HEIGHT - 90)
+        self.bullet2.reset(new_x=50, new_y=0)
+
+        print("📊 Datos recopilados hasta la colisión:", self.data_collector.data)
+        self.show_main_menu()
+
+    # ------------------------------------
+    # Guardar datos en cada fotograma (solo en modo manual)
+    # ------------------------------------
+    def record_data_if_manual(self):
+        """
+        Registra una muestra en data_collector compuesta por:
+        (velocidad_bala1, distancia_bala1, bala2_y, distancia_bala2, mov_derecha, accion)
+        """
+        keys = pygame.key.get_pressed()
+        mov_derecha = 1 if keys[pygame.K_RIGHT] else 0
+        salto = 1 if self.player.is_jumping else 0
+
+        dist_bala1 = abs(self.player.rect.x - self.bullet1.rect.x)
+        dist_bala2 = abs(self.player.rect.x - self.bullet2.rect.x)
+        bala2_y = self.bullet2.rect.y
+
+        if salto and mov_derecha:
+            accion = 3
+        elif salto:
+            accion = 1
+        elif mov_derecha:
+            accion = 2
+        else:
+            accion = 0
+
+        self.data_collector.add_data(
+            vel_bala=self.bullet1.vx,
+            dist_bala1=dist_bala1,
+            bala2_y=bala2_y,
+            dist_bala2=dist_bala2,
+            mov_derecha=mov_derecha,
+            accion=accion
+        )
+
+    # ------------------------------------
+    # Actualización de lógica y dibujo
+    # ------------------------------------
+    def update_and_draw(self):
+        prediccion = None
+
+        # Si estamos en modo automático y hay un modelo cargado
+        if self.auto_mode and self.model is not None and not self.paused:
+            dist_bala1 = abs(self.player.rect.x - self.bullet1.rect.x)
+            dist_bala2 = abs(self.player.rect.x - self.bullet2.rect.x)
+            bala2_y = self.bullet2.rect.y
+
+            # 1) Si bala2_y supera el umbral, forzamos mover a la derecha
+            if bala2_y > UMBRAL_BALA2_Y:
+                prediccion = 2
+                print(f"[DEBUG] Forzado mover derecha porque bala2_y={bala2_y} > {UMBRAL_BALA2_Y}")
+            else:
+                # 2) De lo contrario, dejamos que el modelo decida
+                entrada = [[
+                    self.bullet1.vx,
+                    dist_bala1,
+                    bala2_y,
+                    dist_bala2
+                ]]
+                print(
+                    f"[DEBUG] Características entrada: "
+                    f"vel_bala={self.bullet1.vx}, dist_bala1={dist_bala1}, "
+                    f"bala2_y={bala2_y}, dist_bala2={dist_bala2}"
+                )
+                try:
+                    # Convertir entrada a float para Red Neuronal o KNN
+                    entrada = [[float(x) for x in entrada[0]]]
+                    prediccion = self.model.predict(entrada)[0]
+                    print(f"[DEBUG] Predicción del modelo: {prediccion}")
+                except Exception as e:
+                    print(f"❌ Error al predecir: {e}")
+                    prediccion = None
+
+            # 3) Aplicar la predicción
+            if prediccion is not None:
+                # Si debe saltar
+                if prediccion in [1, 3] and self.player.on_ground:
+                    print("[DEBUG] Acción: SALTAR")
+                    self.player.start_jump()
+
+                # Si debe moverse a la derecha
+                if prediccion in [2, 3]:
+                    if self.player.rect.x - POS_INICIAL_X < 30:
+                        print("[DEBUG] Acción: MOVER DERECHA")
+                        self.player.rect.x += VEL_JUGADOR
+                    # else:
+                    #     print("[DEBUG] Límite de movimiento a la derecha alcanzado")
+                else:
+                    # Si la predicción no incluye mover a la derecha,
+                    # devolvemos al jugador hacia la posición inicial
+                    if self.player.rect.x > POS_INICIAL_X:
+                        self.player.rect.x -= VEL_JUGADOR
+                        if self.player.rect.x < POS_INICIAL_X:
+                            self.player.rect.x = POS_INICIAL_X
+
+        # ----------------------------------------------------------
+        # 2) Actualizar fondo "parallax"
+        # ----------------------------------------------------------
+        self.fondo_x1 -= 1
+        self.fondo_x2 -= 1
+        if self.fondo_x1 <= -WIDTH:
+            self.fondo_x1 = WIDTH
+        if self.fondo_x2 <= -WIDTH:
+            self.fondo_x2 = WIDTH
+
+        # ----------------------------------------------------------
+        # 3) Dibujar fondo
+        # ----------------------------------------------------------
+        self.screen.blit(self.fondo_img, (self.fondo_x1, 0))
+        self.screen.blit(self.fondo_img, (self.fondo_x2, 0))
+
+        # ----------------------------------------------------------
+        # 4) Actualizar y dibujar jugador
+        # ----------------------------------------------------------
+        self.player.update()
+        self.player.draw(self.screen)
+
+        # ----------------------------------------------------------
+        # 5) Dibujar la nave
+        # ----------------------------------------------------------
+        self.screen.blit(self.nave_img, (self.nave_rect.x, self.nave_rect.y))
+
+        # ----------------------------------------------------------
+        # 6) Actualizar y dibujar bala1
+        # ----------------------------------------------------------
+        self.bullet1.update()
+        if self.bullet1.rect.x < 0:  # Si sale por izquierda, reset
+            self.bullet1.reset(new_x=WIDTH - 50, new_y=HEIGHT - 90)
+        self.bullet1.draw(self.screen)
+
+        # ----------------------------------------------------------
+        # 7) Actualizar y dibujar bala2
+        # ----------------------------------------------------------
+        self.bullet2.update()
+        if self.bullet2.rect.y > HEIGHT:  # Si sale por abajo, reset
+            self.bullet2.reset(new_x=50, new_y=0)
+        self.bullet2.draw(self.screen)
+
+        # ----------------------------------------------------------
+        # 8) Detectar colisión (después de mover todo)
+        # ----------------------------------------------------------
+        collided_bullet = self.detect_collision()
+        if collided_bullet is not None:
+            print(f"¡Colisión con bala {collided_bullet}!")
+            if not self.auto_mode:
+
+                
+                # Entrenar todos los modelos: Árbol de Decisión, Red Neuronal y KNN
+                dt_ok = self.data_collector.train_decision_tree()
+                nn_ok = self.data_collector.train_neural_network()
+                knn_ok = self.data_collector.train_knn()
+                lr_ok = self.data_collector.train_linear_regression()
+                if not (dt_ok or nn_ok or knn_ok or lr_ok):
+                    self.show_error_message(
+                        "No hay datos para entrenar los modelos.", duration_seconds=2
+                    )
+                self.restart_game()
+
+        # ----------------------------------------------------------
+        # 9) En modo manual, registrar datos cada frame
+        # ----------------------------------------------------------
+        if (not self.auto_mode) and (not self.paused):
+            self.record_data_if_manual()
+
+    # ------------------------------------
+    # Bucle principal
+    # ------------------------------------
+    def run(self):
+        self.show_main_menu()
+
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.data_collector.save_csv()
+                    self.running = False
+
+                if event.type == pygame.KEYDOWN:
+                    if (
+                        event.key == pygame.K_UP
+                        and self.player.on_ground
+                        and not self.paused
+                        and not self.auto_mode
+                    ):
+                        self.player.start_jump()
+                    if event.key == pygame.K_p:
+                        self.paused = not self.paused
+                        print("Juego pausado." if self.paused else "Juego reanudado.")
+                    if event.key == pygame.K_q:
+                        self.data_collector.save_csv()
+                        pygame.quit()
+                        exit()
+                    if event.key == pygame.K_r:
+                        # Al presionar 'R', reiniciamos posiciones y volvemos al menú principal
+                        self.player.rect.x, self.player.rect.y = POS_INICIAL_X, HEIGHT - 100
+                        self.player.is_jumping = False
+                        self.player.on_ground = True
+                        self.player.jump_height = ALTURA_SALTO_INICIAL
+                        self.bullet1.reset(new_x=WIDTH - 50, new_y=HEIGHT - 90)
+                        self.bullet2.reset(new_x=50, new_y=0)
+                        self.auto_mode = False
+                        self.paused = False
+                        self.show_main_menu()
+
+            # Movimiento manual con flecha derecha (solo si no está en auto)
+            if not self.paused and not self.auto_mode:
+                keys = pygame.key.get_pressed()
+                if keys[pygame.K_RIGHT]:
+                    if self.player.rect.x - POS_INICIAL_X < 30:
+                        self.player.rect.x += VEL_JUGADOR
+                else:
+                    if self.player.rect.x > POS_INICIAL_X:
+                        self.player.rect.x -= VEL_JUGADOR
+                        if self.player.rect.x < POS_INICIAL_X:
+                            self.player.rect.x = POS_INICIAL_X
+
+            if not self.paused:
+                self.update_and_draw()
+
+            pygame.display.flip()
+            self.clock.tick(FPS)
+
+        pygame.quit()
+
+
+# ------------------------------------
+# Punto de entrada
+# ------------------------------------
 if __name__ == "__main__":
-    main()
+    game = Game()
+    game.run()
